@@ -1,0 +1,79 @@
+WITH rfm_metrics --Make a recency, frequency, monetary column by each customer_id
+AS (
+    SELECT 
+        customer_id,
+        MAX(adjusted_created_at)::DATE as last_active_date,
+        CURRENT_DATE - MAX(adjusted_created_at)::DATE as recency,
+        COUNT ( DISTINCT sales_id) as frequency,
+        SUM(net_sales) as monetary
+    FROM sales_adjusted
+    WHERE
+        adjusted_created_at >= CURRENT_DATE - INTERVAL '1 YEAR'
+    GROUP BY 
+        customer_id
+),
+
+rfm_percent_rank -- Make frequency percent rank and monetary percent rank
+AS (
+    SELECT 
+        *,
+        percent_rank() OVER (ORDER BY frequency) as frequency_percent_rank,
+        percent_rank() OVER (ORDER BY monetary) as monetary_percent_rank
+    FROM rfm_metrics
+),
+rfm_rank -- make recency rank, monetary rank, frequency rank
+AS (
+    SELECT
+        *,
+        case
+            WHEN recency between 0 and 100 then 3
+            WHEN recency between 100 and 200 then 2
+            WHEN recency between 200 and 370 then 1
+            ELSE 0
+        END AS recency_rank,
+        case
+            WHEN frequency_percent_rank between 0.8 and 1 then 3
+            WHEN frequency_percent_rank between 0.5 and 0.8 then 2
+            WHEN frequency_percent_rank between 0 and 0.5 then 1
+            ELSE 0
+        END AS frequency_rank,
+        case
+            WHEN monetary_percent_rank between 0.8 and 1 then 3
+            WHEN monetary_percent_rank between 0.5 and 0.8 then 2
+            WHEN monetary_percent_rank between 0 and 0.5 then 1
+            ELSE 0
+        END AS monetary_rank
+FROM rfm_percent_rank
+),
+
+rfm_rank_concat -- Make a segmentaion column ( rfm_rank )
+AS (
+
+    SELECT  *,
+        concat(recency_rank,frequency_rank,monetary_rank ) as rfm_rank
+    FROM rfm_rank
+)
+
+
+SELECT *,
+    CASE
+        WHEN recency_rank = 1 THEN '1-Churned'
+        WHEN recency_rank = 2 THEN '2-Churning'
+        WHEN recency_rank = 3 THEN '3-Active'
+    END AS recency_segment,
+    CASE 
+        WHEN frequency_rank = 1 THEN '1-Least frequent'
+        WHEN frequency_rank = 2 THEN '2-Frequent'
+        WHEN frequency_rank = 3 THEN '3-Most frequent'
+    END as frequency_segment,
+    CASE
+        WHEN monetary_rank = 1 THEN '1-Least spending'
+        WHEN monetary_rank = 2 THEN '2-Normal spending'
+        WHEN monetary_rank = 3 THEN '3-Most spending'
+    END AS monetary_segment,
+    CASE
+        WHEN rfm_rank IN( '333', '323' ) then 'VIP'
+        WHEN rfm_rank IN ( '313' ) then 'VIP, high purchasing'
+        WHEN rfm_rank IN ( '233','223' ) then 'VIP but churning/churned'
+        WHEN rfm_rank IN ( '332','331' ) then 'Normal'
+    END as rfm_segment
